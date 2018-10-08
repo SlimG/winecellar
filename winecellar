@@ -12,6 +12,16 @@ WINEPREFIX=$(mktemp -d XXXXXXXXXXXXX)
 # Requirements #
 ################
 
+# If wine command does not exist
+if ! [ -x "$(command -v wine)" ]; then
+	zenity --title "winecellar" --error --text "Error: unionfs-fuse command is missing from PATH"
+	exit 1
+fi
+
+# If wine is old
+# wine --version
+
+
 # If unionfs-fuse command does not exist
 if ! [ -x "$(command -v unionfs-fuse)" ]; then
 	zenity --title "winecellar" --error --text "Error: unionfs-fuse command is missing from PATH"
