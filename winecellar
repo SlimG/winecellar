@@ -1,0 +1,50 @@
+#!/bin/sh
+
+# Variable declarations
+IMAGE="$1"
+LAUNCHCMD="$2"
+APP=$(basename $IMAGE)
+STORAGE=$HOME/.winecellar/$APP
+IMAGEMOUNT=$(mktemp -d XXXXXXXXXXXXX)
+WINEPREFIX=$(mktemp -d XXXXXXXXXXXXX)
+
+################
+# Requirements #
+################
+
+# If unionfs-fuse command does not exist
+if ! [ -x "$(command -v unionfs-fuse)" ]; then
+	zenity --title "winecellar" --error --text "Error: unionfs-fuse command is missing from PATH"
+	exit 1
+fi
+
+
+# If squashfuse command does not exist
+if ! [ -x "$(command -v squashfuse)" ]; then
+	zenity --title "winecellar" --error --text "Error: squashfuse command is missing from PATH"
+	exit 1
+fi
+
+if ! [ -d "$STORAGE" ]; then
+	mkdir -p "$STORAGE"
+fi
+
+# Try mounting readonly layer
+squashfuse "$IMAGE" "$IMAGEMOUNT"
+
+# Try mounting readwrite layer
+unionfs-fuse -o cow -o dirs=$IMAGEMOUNT=RO:$STORAGE=RW $WINEPREFIX
+
+
+#############
+# Launching #
+#############
+wine "$LAUNCHCMD"
+
+
+###########
+# Cleanup #
+###########
+fusermount -u "$WINEPREFIX"
+fusermount -u "$IMAGEMOUNT"
+rm -R "$WINEPREFIX" "$IMAGEMOUNT"
