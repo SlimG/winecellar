@@ -1,4 +1,36 @@
-#!/bin/sh
+#!/bin/sh -e
+
+# Created by Robert Grønning <slimg@iggu.org>
+
+# Usage info
+show_help() {
+cat << EOF
+Usage: ${0##*/} [Options] create SOURCE_FOLDER [DESTINATION_FOLDER]
+       ${0##*/} [Options] install SQUASHFS_FILE
+       ${0##*/} [Options] remove APP_ID
+       ${0##*/} [Options] launch APP_ID SCRIPT '[ARGUMENTS...]'
+       ${0##*/} -h
+         Show this help
+
+Options:
+  -f FOLDER_PATH
+       Path to folder where SQUASFS images are stored
+EOF
+}
+
+while getopts hf: opt
+do
+  case "$opt" in
+    f)
+      echo "folder: $OPTARG"
+      ;;
+    h)
+      show_help
+      exit 1
+    ;;
+  esac
+done
+shift $((OPTIND-1))
 
 # Variable declarations
 IMAGE="$1"
@@ -7,6 +39,7 @@ APP=$(basename $IMAGE)
 STORAGE=$HOME/.winecellar/$APP
 IMAGEMOUNT=$(mktemp -d XXXXXXXXXXXXX)
 WINEPREFIX=$(mktemp -d XXXXXXXXXXXXX)
+
 
 ################
 # Requirements #
@@ -35,26 +68,42 @@ if ! [ -x "$(command -v squashfuse)" ]; then
 	exit 1
 fi
 
-if ! [ -d "$STORAGE" ]; then
-	mkdir -p "$STORAGE"
-fi
 
-# Try mounting readonly layer
-squashfuse "$IMAGE" "$IMAGEMOUNT"
+case ${1} in
+  create)
+    SOURCE_FOLDER=${2}
+    DESTINATION_FOLDER=${3}
+    echo "Create squashfs image in $DESTINATION_FOLDER based on $SOURCE_FOLDER"
+    ;;
+  install)
+    SQUASHFS_FILE=${2}
+    echo "Installing $SQUASHFS_FILE"
+    ;;
+  remove)
+    APP_ID=${2}
+    echo "Removing $APP_ID"
+    ;;
+  launch)
+    APP_ID=${2}
+    SCRIPT=${3}
+    ARGUMENTS=${4}
+    echo "Launching $APP_ID using $SCRIPT with $ARGUMENTS"
+    # Try mounting readonly layer
+    squashfuse "$IMAGE" "$IMAGEMOUNT"
 
-# Try mounting readwrite layer
-unionfs-fuse -o cow -o dirs=$IMAGEMOUNT=RO:$STORAGE=RW $WINEPREFIX
+    if ! [ -d "$STORAGE" ]; then
+      mkdir -p "$STORAGE"
+    fi
 
+    # Try mounting readwrite layer
+    unionfs-fuse -o cow -o dirs=$IMAGEMOUNT=RO:$STORAGE=RW $WINEPREFIX
 
-#############
-# Launching #
-#############
-wine "$LAUNCHCMD"
+    # Launching
+    wine "$LAUNCHCMD"
 
-
-###########
-# Cleanup #
-###########
-fusermount -u "$WINEPREFIX"
-fusermount -u "$IMAGEMOUNT"
-rm -R "$WINEPREFIX" "$IMAGEMOUNT"
+    # Cleanup
+    fusermount -u "$WINEPREFIX"
+    fusermount -u "$IMAGEMOUNT"
+    rm -R "$WINEPREFIX" "$IMAGEMOUNT"
+    ;;
+esac
