@@ -5,36 +5,116 @@
 # Usage info
 show_help() {
 	cat << EOF
-Usage: ${0##*/} [Options] create SOURCE_FOLDER [DESTINATION_SQUASHFS_FILE]
-       ${0##*/} [Options] install SQUASHFS_FILE
-       ${0##*/} [Options] remove APP_ID
-       ${0##*/} [Options] launch APP_ID SCRIPT '[ARGUMENTS...]'
-       ${0##*/} [Options] info APP_ID
-       ${0##*/} [Options] reset APP_ID
-       ${0##*/} [Options] list
-       ${0##*/} -h
-	 Show this help
+Usage: ${0##*/} [Options] Command
+
+Commands:
+  create SOURCE_FOLDER [DESTINATION_SQUASHFS_FILE]
+    Create a new SquashFS file from the content of a folder.
+
+  install SQUASHFS_FILE
+    Install a SquashFS file as an App.
+
+  remove APP_ID
+    Remove an installed App.
+
+  launch APP_ID SCRIPT '[ARGUMENTS...]'
+    Start a script from App with optional arguments.
+
+  info APP_ID
+    Show information regarding installed App
+
+  reset APP_ID
+   Remove persistent data from installed App 
+
+  list
+    Show a list of all installed Apps
 
 Options:
   -w WINECELLAR_FOLDER_PATH
        Set alternate path to winecellar folder for this app. Defaults to $HOME/.winecellar.
+
   -a APP_ID
        Set alternate APP_ID. Defaults to filename of SQUASHFS_FILE without extension.
+
+  -h
+       Show this help
+
+Requirements
+  unionfs-fuse
+    URL: https://github.com/rpodgorny/unionfs-fuse
+
+  squashfuse
+    URL: https://github.com/vasi/squashfuse
+
+Configuration files:
+  /etc/winecellar.cfg
+  ~/.winecellar/config
+    Optional configurationfile where the following may be specified:
+
+      WINECELLAR_FOLDER_PATH='/alternate/location'
+
+App files:
+  winecellar/README
+    This is just information that will be shown
+    when running the "info" command
+
+  winecellar/scripts/...
+    These are the scripts referred to by the
+    "launch" command.
+
+    See Example section.
+
+    All lines starting with # will be displayed
+    when running the "info" command.
+
+Examples:
+  winecellar/scripts/default
+    #!/bin/sh -e
+    # This is an example script
+    # For running Worms Armageddon
+    #
+    # Note: You will get an error
+    # message regarding "UAC", just
+    # ignore that.
+
+    dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+    WINEPREFIX="$dir/../.." wine 'C:\worms_armageddon\WA.exe' | cat
 EOF
 }
 
-prepare_directories() {
-	mkdir -p "$1/mountro"
-	mkdir -p "$1/mount"
-	mkdir -p "$1/persistent"
+# Function declaration
+writable_folder() {
+	if [ ! -e "$1" ]; then
+		mkdir -vp "$1"
+	elif [ ! -d "$1" ]; then
+		echo "Error: \"$1\" already exist, but is not a folder"
+		return 1
+	elif [ ! -w "$1" ]; then
+		echo "Error: \"$1\" already exist, but is not writable"
+		return 1
+	fi
+	return 0
 }
 
-unmount_all(){
-	# Making sure there are no mounts
-	fusermount -u "$1/mountro"
-	fusermount -u "$1/mount"
+funmount() {
+	if mount | grep "$1" > /dev/null; then
+		fusermount -u "$1"
+	fi
 }
 
+# Read global configuration
+if [ -r "/etc/winecellar.cfg" ]; then
+  source "/etc/winecellar.cfg"
+fi
+
+# Read user configuration
+if [ -r "$HOME/.winecellar/winecellar.cfg" ]; then
+  echo "Reading user config...." >&2
+  source "$HOME/.winecellar/winecellar.cfg"
+fi
+
+# Detect Options
 while getopts ha:w: opt
 do
 	case "$opt" in
@@ -57,59 +137,145 @@ WINECELLAR_FOLDER_PATH="${WINECELLAR_FOLDER_PATH:-$HOME/.winecellar}"
 
 case ${1} in
 	create)
+		# Arguments
 		SOURCE_FOLDER=${2}
 		APP_ID="${APP_ID:-$(basename $2)}"
 		DESTINATION_SQUASHFS_FILE=${3:-}
+
 		echo "Create squashfs file $DESTINATION_SQUASHFS_FILE based on $SOURCE_FOLDER"
+
+		# Removes SquashFS file if existing
+		if [ -e "$DESTINATION_SQUASHFS_FILE" ]; then
+			rm -v "$DESTINATION_SQUASHFS_FILE"
+		fi
+
+		# Copies SquashFS file
+		mksquashfs "$SOURCE_FOLDER" "$DESTINATION_SQUASHFS_FILE"
 		;;
 	install)
-		APP_ID="${APP_ID:-${2%.*}}"
+		# Arguments
+		APP_ID="${APP_ID:-$(basename ${2%.*})}"
 		SQUASHFS_FILE=${2}
+
 		echo "Installing $SQUASHFS_FILE as $APP_ID ($WINECELLAR_FOLDER_PATH/$APP_ID)"
+
+		# Making sure folders exist
+		writable_folder "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		writable_folder "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+		writable_folder "$WINECELLAR_FOLDER_PATH/$APP_ID/persistent"
+
+		# Unmounting in case a previous launch did not Unmount when finished
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+
+		# Copying file
+		cp -vi "$SQUASHFS_FILE" "$WINECELLAR_FOLDER_PATH/$APP_ID/$APP_ID.squashfs"
 		;;
 	remove)
+		# Arguments
 		APP_ID="${APP_ID:-${2%.*}}"
+
 		echo "Removing $APP_ID ($WINECELLAR_FOLDER_PATH/$APP_ID)"
+
+		# Unmounting in case a previous launch did not Unmount when finished
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+
+		rm -Rv "$WINECELLAR_FOLDER_PATH/$APP_ID"
 		;;
 	launch)
+		# Arguments
 		APP_ID="${APP_ID:-${2%.*}}"
-		prepare_directories "$WINECELLAR_FOLDER_PATH/$APP_ID"
 		SCRIPT=${3}
 		ARGUMENTS=${4}
 
+		if [ -z $SCRIPT ]; then
+			echo "Error: SCRIPT is required"
+			exit 1
+		fi
+
 		echo "Launching $APP_ID ($WINECELLAR_FOLDER_PATH/$APP_ID/mount/$SCRIPT \"$ARGUMENTS\")"
-		unmount_all "$WINECELLAR_FOLDER_PATH/$APP_ID"
+
+		# Making sure folders exist
+		writable_folder "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		writable_folder "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+		writable_folder "$WINECELLAR_FOLDER_PATH/$APP_ID/persistent"
+
+		# Unmounting in case a previous launch did not Unmount when finished
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
 
 		# Try mounting readonly layer
-		if ! type "squashfuse" > /dev/null; then exit; fi
-		#squashfuse "$IMAGE" "$IMAGEMOUNT"
+		squashfuse "$WINECELLAR_FOLDER_PATH/$APP_ID/$APP_ID.squashfs" "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
 
 		# Try mounting readwrite layer
-		if ! type "unionfs-fuse" > /dev/null; then exit; fi
-		#unionfs-fuse -o cow -o dirs=$IMAGEMOUNT=RO:$STORAGE=RW $WINEPREFIX
+		unionfs-fuse -o cow -o dirs="$WINECELLAR_FOLDER_PATH/$APP_ID/persistent"=RW:"$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"=RO "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
 
 		# Launching
-		if ! type "wine" > /dev/null; then exit; fi
-		#wine "$LAUNCHCMD"
+		"$WINECELLAR_FOLDER_PATH/$APP_ID/mount/winecellar/scripts/$SCRIPT" $ARGUMENTS
+
+		# Waiting 5 seconds for wineserver to shut down
+		sleep 5 
+
+		# Unmounting
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
 		;;
 	info)
+		# Arguments
 		APP_ID="${APP_ID:-${2%.*}}"
-		prepare_directories "$WINECELLAR_FOLDER_PATH/$APP_ID"
 
 		echo "Showing information about $APP_ID ($WINECELLAR_FOLDER_PATH/$APP_ID)"
+
+		# Unmounting in case a previous launch did not Unmount when finished
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+
+		# Try mounting readonly layer
+		squashfuse "$WINECELLAR_FOLDER_PATH/$APP_ID/$APP_ID.squashfs" "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+
+		# Gather info
+		echo "App: $APP_ID"
+		echo ""
+		cat "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro/winecellar/README" | sed 's|^[ ]*|  |'
+		echo ""
+		echo "  Available scripts:"
+
+
+		for script in "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro/winecellar/scripts"/*
+		do
+			if [ -f $script ]; then
+				echo "    $(basename "$script")"
+				echo ""
+				tail -n+2 "$script" | grep '^#' | sed 's|^#[ ]*|      |'
+				echo ""
+			fi
+		done
+
+		# Unmounting
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
 		;;
 	reset)
+		# Arguments
 		APP_ID="${APP_ID:-${2%.*}}"
-		prepare_directories "$WINECELLAR_FOLDER_PATH/$APP_ID"
-		unmount_all "$WINECELLAR_FOLDER_PATH/$APP_ID"
+
 		echo "Resetting $APP_ID ($WINECELLAR_FOLDER_PATH/$APP_ID/persistent)"
+
+		# Unmounting in case a previous launch did not Unmount when finished
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mount"
+		funmount "$WINECELLAR_FOLDER_PATH/$APP_ID/mountro"
+
+		rm -Rv "$WINECELLAR_FOLDER_PATH/$APP_ID/persistent"
 		;;
 	list)
-		prepare_directories "$WINECELLAR_FOLDER_PATH"
-		echo "Listing all APP_ID available"
-		if ! type "find" > /dev/null; then exit; fi
-		cd "$WINECELLAR_FOLDER_PATH"
-		find * -maxdepth 0 -type d
+		writable_folder "$WINECELLAR_FOLDER_PATH"
+		echo "Apps available:"
+		for app in "$WINECELLAR_FOLDER_PATH"/*
+		do
+			if [ -d $app ]; then
+				echo " $(basename "$app")"
+			fi
+		done
 		;;
 	*)
 		show_help
